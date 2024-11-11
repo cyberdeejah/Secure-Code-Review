@@ -1,0 +1,254 @@
+#!/bin/bash
+
+# Function to check if ag is installed
+
+check_ag_installed() {
+
+  if ! command -v ag &> /dev/null; then
+
+    echo "'ag' (The Silver Searcher) is not installed."
+
+    read -p "Do you want to install it? (y/n): " install_ag
+
+    if [[ "$install_ag" == "y" || "$install_ag" == "Y" ]]; then
+
+      # Attempt to install ag based on the package manager
+
+      if command -v apt-get &> /dev/null; then
+
+        sudo apt-get update && sudo apt-get install -y silversearcher-ag
+
+      elif command -v yum &> /dev/null; then
+
+        sudo yum install -y the_silver_searcher
+
+      elif command -v brew &> /dev/null; then
+
+        brew install the_silver_searcher
+
+      else
+        echo "Unsupported package manager. Please install 'ag' manually."
+
+        exit 1
+
+      fi
+
+    else
+
+      echo "Please install 'ag' to proceed."
+
+      exit 1
+
+    fi
+
+  fi
+
+}
+
+# Check if ag is installed
+
+check_ag_installed
+
+# Prompt user for the path to the source code file or directory
+
+read -p "Enter the path to the source code file or directory to scan: " path
+
+# Check if the provided path is valid
+
+if [ ! -e "$path" ]; then
+
+  echo "The provided path does not exist."
+
+  exit 1
+
+fi
+
+# Define output files
+
+temp_output_file="scan_results_temp.txt"
+log_file="scan_results_log_.txt"
+
+# Clear or create the temporary output file
+
+> "$temp_output_file"
+
+# Initialize a flag to track if any patterns were found
+
+patterns_found="false"
+
+# Define patterns and their associated metadata
+
+declare -A patterns
+
+# Metadata structure: "Issue|Severity|OWASP Category|CWE ID|Remediation"
+
+patterns=(
+  ["SELECT .* FROM .* WHERE .*="]="SQL Injection|High|A1: Injection|CWE-89|Use prepared statements and parameterized queries."
+  ["os.system"]="Command Injection|High|A1: Injection|CWE-78|Use subprocess.run() with a list of arguments instead of os.system()."
+  ["subprocess.Popen"]="Command Injection|High|A1: Injection|CWE-78|Use subprocess.run() with a list of arguments instead of subprocess.Popen()."
+  ["exec"]="Command Injection|High|A1: Injection|CWE-78|Avoid using exec(). Use safer alternatives."
+  ["eval"]="Command Injection|High|A1: Injection|CWE-78|Avoid using eval(). Use safer alternatives."
+  ["system"]="Command Injection|High|A1: Injection|CWE-78|Avoid using system(). Use safer alternatives."
+  ["document.write"]="Cross-Site Scripting (XSS)|High|A7: Cross-Site Scripting (XSS)|CWE-79|Avoid using document.write(). Use safer alternatives."
+  ["innerHTML"]="Cross-Site Scripting (XSS)|High|A7: Cross-Site Scripting (XSS)|CWE-79|Avoid using innerHTML. Use safer alternatives."
+  ["outerHTML"]="Cross-Site Scripting (XSS)|High|A7: Cross-Site Scripting (XSS)|CWE-79|Avoid using outerHTML. Use safer alternatives."
+  ["html()"]="Cross-Site Scripting (XSS)|High|A7: Cross-Site Scripting (XSS)|CWE-79|Avoid using html(). Use safer alternatives."
+  ["DEBUG = True"]="Debug Mode Enabled|Medium|A5: Security Misconfiguration|CWE-552|Disable debug mode in production."
+  ["ALLOWED_HOSTS = \[\]"]="Improper Host Configuration|Medium|A5: Security Misconfiguration|CWE-913|Specify allowed hosts in production."
+  ["SECRET_KEY = ''"]="Hardcoded Secret Key|Medium|A5: Security Misconfiguration|CWE-522|Use a strong, unique secret key."
+  ["ENV = 'development'"]="Development Environment|Medium|A5: Security Misconfiguration|CWE-16|Set the environment to production in production settings."
+  ["private static final String"]="Hardcoded Sensitive Information|Medium|A5: Security Misconfiguration|CWE-523|Avoid hardcoding sensitive information. Use environment variables or configuration files."
+  ["pbkdf2_sha256.encrypt"]="Weak Password Hashing|High|A3: Sensitive Data Exposure|CWE-759|Use pbkdf2_sha256.hash instead of encrypt for password hashing."
+  ["INSERT INTO .* VALUES (.*%s.*)"]="SQL Injection|High|A1: Injection|CWE-89|Use parameterized queries to prevent SQL injection."
+  ["for \(.*;.*<.*;.*\)"]="Potential DoS|Medium|A6: Security Misconfiguration|CWE-400|Avoid looping through user input directly. Validate and limit input size."
+  ["\$_GET\[.*\]"]="Unsanitized GET Parameter|High|A1: Injection|CWE-20|Validate and sanitize all GET parameters."
+  ["mysqli_query"]="SQL Injection|High|A1: Injection|CWE-89|Use prepared statements and parameterized queries with MySQLi."
+  ["console.log"]="Debugging Code|Low|A5: Security Misconfiguration|CWE-552|Remove debugging code before production."
+  ["print("]="Debugging Code|Low|A5: Security Misconfiguration|CWE-552|Remove debugging code before production."
+  ["TODO:"]="Code TODO|Low|A5: Security Misconfiguration|CWE-697|Address TODO comments before production release."
+  ["FIXME:"]="Code FIXME|Low|A5: Security Misconfiguration|CWE-697|Fix FIXME comments before production release."
+  ["password = '.*'"]="Hardcoded Password|High|A2: Broken Authentication|CWE-259|Avoid hardcoding passwords. Use environment variables or configuration files."
+  ["passwd = '.*'"]="Hardcoded Password|High|A2: Broken Authentication|CWE-259|Avoid hardcoding passwords. Use environment variables or configuration files."
+  ["random.random"]="Insecure Randomness|High|A3: Sensitive Data Exposure|CWE-331|Use a cryptographically secure random number generator."
+  ["print('debug info')"]="Information Leakage|Medium|A5: Security Misconfiguration|CWE-200|Remove debugging statements before production."
+  ["pickle.load"]="Insecure Deserialization|High|A8: Insecure Deserialization|CWE-502|Avoid using pickle for deserialization. Use safer alternatives."
+)
+
+# Function to log findings to the temporary file
+
+log_findings() {
+
+  local file="$1"
+
+  local line="$2"
+
+  local code="$3"
+
+  local issue="$4"
+
+  local severity="$5"
+
+  local owasp="$6"
+
+  local cwe="$7"
+
+  local remediation="$8"
+
+
+  echo "File: $file" >> "$temp_output_file"
+
+  echo "Line: $line" >> "$temp_output_file"
+
+  echo "Code: $code" >> "$temp_output_file"
+
+  echo "Issue: $issue" >> "$temp_output_file"
+
+  echo "Severity: $severity" >> "$temp_output_file"
+
+  echo "OWASP: $owasp" >> "$temp_output_file"
+
+  echo "CWE: $cwe" >> "$temp_output_file"
+
+  echo "Remediation: $remediation" >> "$temp_output_file"
+
+  echo "----------------------------------" >> "$temp_output_file"
+
+  echo " " >> "$temp_output_file"
+
+}
+
+# Runs ag and log findings
+
+run_ag() {
+
+  local pattern="$1"
+
+  # Extracts metadata from the patterns array
+
+  local metadata="${patterns[$pattern]}"
+
+  # Split metadata into components
+
+  IFS='|' read -r -a meta <<< "$metadata"
+
+  local issue="${meta[0]}"
+  local severity="${meta[1]}"
+  local owasp="${meta[2]}"
+  local cwe="${meta[3]}"
+  local remediation="${meta[4]}"
+
+  # Display date, time, and scanning issue
+
+  echo "$(date '+%Y-%m-%d %H:%M:%S') - Scanning code for vulnerability: $issue"
+
+  # Record start time
+
+  local start_time=$(date +%s)
+
+  # Search for the pattern in the specified path and log findings
+
+  if ag -rn "$pattern" "$path" &> /dev/null; then
+
+    ag -rn "$pattern" "$path" | while read -r result; do
+
+      file=$(echo "$result" | cut -d: -f1)
+      line=$(echo "$result" | cut -d: -f2)
+      code=$(echo "$result" | cut -d: -f3-)
+
+      log_findings "$file" "$line" "$code" "$issue" "$severity" "$owasp" "$cwe" "$remediation"
+
+    done
+
+    patterns_found="true"
+
+  fi
+
+
+  # Record end time and calculate elapsed time
+
+  local end_time=$(date +%s)
+  local elapsed_time=$((end_time - start_time))
+
+  echo "$(date '+%Y-%m-%d %H:%M:%S') - Finished scanning for $issue in ${elapsed_time}s"
+
+}
+
+# Start the scan
+
+echo "Scan has started..."
+echo " "
+
+# Loop through patterns and run ag
+
+for pattern in "${!patterns[@]}"; do
+
+  run_ag "$pattern"
+
+done
+
+# Check if any patterns were found
+
+if [ "$patterns_found" = "false" ]; then
+
+  echo ""
+
+  echo "No vulnerabilities found."
+
+else
+
+  echo ""
+
+  echo "Potential vulnerabilities detected. Detailed results saved to $temp_output_file"
+
+fi
+
+
+# Append the scan result to the log file
+
+echo "scan completed on $(date)" >> "$log_file"
+cat "$temp_output_file" >> "$log_file"
+echo "" >> "$log_file"
+
+# Notify the user about the log file
+
+echo "Scan completed. Logs are saved in $log_file."

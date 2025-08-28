@@ -81,7 +81,7 @@ Copy code
 To get started, clone the repository to your local machine:
 
 ```bash
-git clone https://github.com/your-repo/secure-code-review.git
+git clone https://github.com/cyberdeejah/secure-code-review.git
 cd secure-code-review
 
 ### Step 2: Install Dependencies
